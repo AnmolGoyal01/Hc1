@@ -1,67 +1,85 @@
-const express = require('express');
-const mongoose = require('mongoose');
-const multer = require('multer');
-const csv = require('csv-parser');
-const fs = require('fs');
+class Graph {
+  constructor(links, banks) {
+    this.adjacencyList = new Map();
+    this.costs = new Map();
 
-// Connect to MongoDB
-mongoose.connect('mongodb://localhost:27017/bankDB', {
-  useNewUrlParser: true,
-  useUnifiedTopology: true,
-});
+    banks.forEach(({ bic, charge }) => {
+      this.costs.set(bic, charge);
+      this.adjacencyList.set(bic, []);
+    });
 
-// Define Mongoose Models
-const Bank = mongoose.model('Bank', new mongoose.Schema({
-  bic: String,
-  charge: Number,
-}));
+    links.forEach(({ fromBic, toBic, time }) => {
+      this.adjacencyList.get(fromBic).push({ node: toBic, weight: time });
+      this.adjacencyList.get(toBic).push({ node: fromBic, weight: time });
+    });
+  }
 
-const Link = mongoose.model('Link', new mongoose.Schema({
-  fromBic: String,
-  toBic: String,
-  time: Number,
-}));
+  dijkstra(start, end, weightKey) {
+    const pq = new Map();
+    const distances = new Map();
+    const previous = new Map();
 
-const app = express();
-const upload = multer({ dest: 'uploads/' });
+    this.adjacencyList.forEach((_, node) => {
+      distances.set(node, Infinity);
+      previous.set(node, null);
+    });
+    distances.set(start, 0);
+    pq.set(start, 0);
 
-// Helper function to parse and save CSV
-const processCSV = (filePath, Model) => {
-  return new Promise((resolve, reject) => {
-    const results = [];
-    fs.createReadStream(filePath)
-      .pipe(csv())
-      .on('data', (data) => results.push(data))
-      .on('end', async () => {
-        try {
-          await Model.insertMany(results);
-          fs.unlinkSync(filePath);
-          resolve('Upload successful');
-        } catch (error) {
-          reject(error);
+    while (pq.size) {
+      const [currentNode] = [...pq.entries()].sort((a, b) => a[1] - b[1]);
+      pq.delete(currentNode[0]);
+
+      if (currentNode[0] === end) break;
+      for (const neighbor of this.adjacencyList.get(currentNode[0])) {
+        const weight = weightKey === 'time' ? neighbor.weight : this.costs.get(neighbor.node);
+        const newDistance = distances.get(currentNode[0]) + weight;
+        if (newDistance < distances.get(neighbor.node)) {
+          distances.set(neighbor.node, newDistance);
+          previous.set(neighbor.node, currentNode[0]);
+          pq.set(neighbor.node, newDistance);
         }
-      })
-      .on('error', (error) => reject(error));
-  });
-};
-
-// Routes to upload files
-app.post('/upload/banks', upload.single('file'), async (req, res) => {
-  try {
-    const message = await processCSV(req.file.path, Bank);
-    res.status(200).json({ message });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
+      }
+    }
+    return this.constructPath(previous, start, end, distances.get(end));
   }
-});
 
-app.post('/upload/links', upload.single('file'), async (req, res) => {
-  try {
-    const message = await processCSV(req.file.path, Link);
-    res.status(200).json({ message });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
+  constructPath(previous, start, end, total) {
+    const path = [];
+    let current = end;
+    while (current) {
+      path.unshift(current);
+      current = previous.get(current);
+    }
+    return {
+      route: path.join(' -> '),
+      [typeof total === 'number' ? 'time' : 'cost']: total,
+    };
   }
-});
+}
 
-app.listen(3000, () => console.log('Server running on port 3000'));
+function getShortestTimePath(fromBic, toBic, links, banks) {
+  const graph = new Graph(links, banks);
+  return graph.dijkstra(fromBic, toBic, 'time');
+}
+
+function cheapestPath(fromBic, toBic, links, banks) {
+  const graph = new Graph(links, banks);
+  return graph.dijkstra(fromBic, toBic, 'cost');
+}
+
+// Example Usage
+const links = [
+  { fromBic: 'A', toBic: 'B', time: 10 },
+  { fromBic: 'B', toBic: 'C', time: 20 },
+  { fromBic: 'A', toBic: 'C', time: 50 },
+];
+
+const banks = [
+  { bic: 'A', charge: 5 },
+  { bic: 'B', charge: 10 },
+  { bic: 'C', charge: 2 },
+];
+
+console.log(getShortestTimePath('A', 'C', links, banks));
+console.log(cheapestPath('A', 'C', links, banks));
